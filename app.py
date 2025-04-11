@@ -57,6 +57,56 @@ def dynamic_paragraph_interpretation(
     # Displaying the dynamic interpretation in Streamlit
     st.markdown(paragraph)
 
+def explain_property(property_name: str, result: bool, assignment, preferences, agents, objects) -> str:
+    """
+    Returns an explanation string for a given property based on the evaluation result.
+
+    Args:
+        property_name: The name of the property.
+        result: Whether the property holds (True/False).
+        assignment: The assignment matrix (nested dict).
+        preferences: Dict of agent preferences.
+        agents: List of agents.
+        objects: List of objects.
+
+    Returns:
+        A rich explanation string.
+    """
+    explanation = ""
+
+    if property_name == "Ex Post Efficiency":
+        explanation += "Ex Post Efficiency means the result can be decomposed into deterministic assignments, each of which is Pareto optimal.\n\n"
+        if not result:
+            explanation += "❌ This assignment cannot be represented only using Pareto optimal deterministic outcomes. For instance, an agent could have improved their allocation without hurting others, but the mechanism did not allow that.\n\n"
+    elif property_name == "Ordinal Efficiency":
+        explanation += "Ordinal Efficiency ensures that no other assignment exists that all agents weakly prefer and at least one strictly prefers, based only on ranks.\n\n"
+        if not result:
+            explanation += "❌ There exists a different assignment that would be preferred by all agents using their ordinal preferences. The current one contains a dominance cycle.\n\n"
+    elif property_name == "No Envy":
+        explanation += "No Envy means that no agent prefers the allocation of another agent (in expected utility).\n\n"
+        if not result:
+            explanation += "❌ At least one agent prefers the dessert allocation of another agent. For example:\n\n"
+            for a1 in agents:
+                for a2 in agents:
+                    if a1 == a2:
+                        continue
+                    u1 = sum((len(objects) - preferences[a1].index(obj)) * assignment[a1][obj] for obj in objects)
+                    u2 = sum((len(objects) - preferences[a1].index(obj)) * assignment[a2][obj] for obj in objects)
+                    if u2 > u1:
+                        explanation += f"- **{a1}** prefers **{a2}**’s allocation: utility of {u1:.2f} vs {u2:.2f} (from {a1}’s perspective)\n"
+                        break
+                else:
+                    continue
+                break
+            explanation += "\nThis shows envy exists under the current allocation.\n\n"
+    elif property_name == "Strategy-Proofness":
+        explanation += "Strategy-Proofness ensures that agents cannot gain from misreporting their preferences.\n\n"
+        if not result:
+            explanation += "❌ An agent could increase their expected utility by swapping preferences. For example, reporting a lower-ranked dessert higher resulted in better outcomes for them.\n\n"
+
+    return explanation
+
+
 # Streamlit UI
 st.title("Dessert Assignment Mechanism Comparison")
 
@@ -90,14 +140,13 @@ if len(preferences) == n:
     plot_heatmap(df, mechanism)
     dynamic_paragraph_interpretation(assignment, agents, objects, mechanism)
     
-    # Verify properties using the new function
     st.subheader("Property Verification")
     properties = evaluate_mechanism_properties(agents, objects, preferences, mechanism)
 
-    st.markdown(f"**Ex Post Efficiency:** {'✅ Yes' if properties['Ex Post Efficiency'] else '❌ No'}")
-    st.markdown(f"**Ordinal Efficiency:** {'✅ Yes' if properties['Ordinal Efficiency'] else '❌ No'}")
-    st.markdown(f"**No Envy:** {'✅ Yes' if properties['No Envy'] else '❌ No'}")
-    st.markdown(f"**Strategy-Proofness:** {'✅ Yes' if properties['Strategy-Proofness'] else '❌ No'}")
-    
+    for prop_name, result in properties.items():
+        explanation = explain_property(prop_name, result, assignment, preferences, agents, objects)
+        st.markdown(f"### {prop_name}: {'✅ Yes' if result else '❌ No'}")
+        st.markdown(explanation)
+
 
     st.download_button("Download Results (CSV)", df.to_csv(index=False), file_name="assignment_results.csv")

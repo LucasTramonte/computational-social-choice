@@ -4,6 +4,8 @@ import pandas as pd
 import pulp
 from mechanisms import probabilistic_serial, random_priority, popular_assignment
 from typing import Dict, List, Tuple
+import scipy.optimize
+import networkx as nx
 
 # Mapping mechanism names to the corresponding functions
 MECHANISMS = {
@@ -19,30 +21,52 @@ def check_ex_post_efficiency(
     objects: List[str]
 ) -> bool:
     """
-    Verify if the assignment is ex post efficient.
-    Ex post efficiency means no agent can be made better off without making another worse off.
-    
+    Checks whether a random assignment is ex post efficient.
+
+    Ex post efficiency holds if the assignment can be expressed as a convex combination 
+    of deterministic Pareto optimal assignments.
+
     Args:
-        assignment: A dictionary where each agent (str) maps to another dictionary mapping each object (str) to a fraction (float).
-        preferences: A dictionary where each agent (str) maps to a list of objects (str) ranked by preference, in order.
-        agents: A list of agent names (strings).
-        objects: A list of object names (strings).
+        assignment: A nested dictionary where assignment[agent][object] = probability.
+        preferences: A dictionary mapping each agent to their ordered list of preferred objects.
+        agents: List of agent names.
+        objects: List of object names.
 
     Returns:
-        A boolean indicating whether the assignment is ex post efficient.
+        True if the assignment is ex post efficient, False otherwise.
     """
-    for agent1 in agents:
-        for agent2 in agents:
-            if agent1 != agent2:
-                for obj1 in objects:
-                    for obj2 in objects:
-                        if preferences[agent1].index(obj2) < preferences[agent1].index(obj1) and \
-                           preferences[agent2].index(obj1) < preferences[agent2].index(obj2):
-                            # Check if reallocating fractions improves utility
-                            if assignment[agent1][obj1] > 0 and assignment[agent2][obj2] > 0:
-                                return False  # Found a potential Pareto improvement
-    return True
+    n = len(agents)
+    perms = list(itertools.permutations(objects))
+    
+    def is_pareto_optimal(perm: Tuple[str, ...]) -> bool:
+        for i, agent_i in enumerate(agents):
+            for j, agent_j in enumerate(agents):
+                if i == j:
+                    continue
+                obj_i, obj_j = perm[i], perm[j]
+                if preferences[agent_i].index(obj_j) < preferences[agent_i].index(obj_i) and \
+                   preferences[agent_j].index(obj_i) < preferences[agent_j].index(obj_j):
+                    return False
+        return True
 
+    pareto_perms = [perm for perm in perms if is_pareto_optimal(perm)]
+
+    A_eq, b_eq = [], []
+    for i, agent in enumerate(agents):
+        for j, obj in enumerate(objects):
+            row = [1.0 if perm[i] == obj else 0.0 for perm in pareto_perms]
+            A_eq.append(row)
+            b_eq.append(assignment[agent][obj])
+
+    result = scipy.optimize.linprog(
+        c=np.zeros(len(pareto_perms)),
+        A_eq=np.array(A_eq),
+        b_eq=np.array(b_eq),
+        bounds=[(0, 1)] * len(pareto_perms),
+        method="highs"
+    )
+    
+    return result.success
 
 def check_ordinal_efficiency(
     assignment: Dict[str, Dict[str, float]],
@@ -51,29 +75,37 @@ def check_ordinal_efficiency(
     objects: List[str]
 ) -> bool:
     """
-    Verify if the assignment is ordinally efficient.
-    Ordinal efficiency means there is no alternative assignment that is strictly better for at least one agent.
-    
+    Checks whether a random assignment is ordinally efficient.
+
+    Ordinal efficiency holds if the assignment is not stochastically dominated by 
+    another assignment under agents' ordinal preferences. This is checked via the 
+    absence of cycles in a preference-induced dominance graph.
+
     Args:
-        assignment: A dictionary where each agent (str) maps to another dictionary mapping each object (str) to a fraction (float).
-        preferences: A dictionary where each agent (str) maps to a list of objects (str) ranked by preference, in order.
-        agents: A list of agent names (strings).
-        objects: A list of object names (strings).
+        assignment: A nested dictionary where assignment[agent][object] = probability.
+        preferences: A dictionary mapping each agent to their ordered list of preferred objects.
+        agents: List of agent names.
+        objects: List of object names.
 
     Returns:
-        A boolean indicating whether the assignment is ordinally efficient.
+        True if the assignment is ordinally efficient, False if a dominance cycle is found.
     """
-    for agent1 in agents:
-        for agent2 in agents:
-            if agent1 != agent2:
-                for obj1 in objects:
-                    for obj2 in objects:
-                        if preferences[agent1].index(obj2) < preferences[agent1].index(obj1) and \
-                           preferences[agent2].index(obj1) < preferences[agent2].index(obj2):
-                            # Check if reallocating fractions improves ordinal rank
-                            if assignment[agent1][obj1] > 0 and assignment[agent2][obj2] > 0:
-                                return False  # Found an alternative that could strictly improve one agent
-    return True
+    G = nx.DiGraph()
+    G.add_nodes_from(objects)
+
+    for agent in agents:
+        pref = preferences[agent]
+        for i, better in enumerate(pref):
+            for worse in pref[i + 1:]:
+                if assignment[agent][worse] > 1e-6:
+                    G.add_edge(better, worse)
+
+    try:
+        nx.find_cycle(G, orientation='original')
+        return False
+    except nx.exception.NetworkXNoCycle:
+        return True
+
 
 
 def check_no_envy(
